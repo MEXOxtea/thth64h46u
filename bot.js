@@ -1,63 +1,73 @@
 const TelegramBot = require('node-telegram-bot-api');
-const os = require('os');
-const { performance } = require('perf_hooks');
-
-const token = '7259127574:AAGKU39y4ccHeRBjdscxVoEA96lyUKLyzeI'; // Replace with your Telegram bot token
+const admin = require('firebase-admin');
+const cron = require('node-cron');
+const serviceAccount = require('./firebase.json');
+const token = '7114080864:AAGqSRVUGjwW9pgR4HsmMRSJP0n6k4E_svM';
+const axios = require('axios');
 const bot = new TelegramBot(token, { polling: true });
+const solanaWeb3 = require('@solana/web3.js');
+const bs58 = require('bs58');
+
+admin.initializeApp({
+    credential: admin.credential.cert(serviceAccount)
+});
+
+const db = admin.firestore();
+
+// all inline keyboard 
+const langmenu = { // Inline Keyboard for New users/invited users to this bot
+    inline_keyboard: [
+        [{ text: 'English 🌎', callback_data : 'en'} ,],
+        [{ text: 'German 🇩🇪', callback_data : 'de'} ,],
+    ]
+}
+
+
+let refercode = 'none';
 
 
 bot.onText(/\/start(?:\s+(.+))?/, async (msg, match) => {
-    const chatId = msg.chat.id;
-bot.sendMessage(chatId, 'Starting performance tests...');
+    const userId = msg.from.id.toString();
+    const Code = match[1];
+    const first_name = msg.from.first_name;
+    const chatId = msg.chat.id.toString();
+    const username = msg.from.username;
+    
+    if (msg.chat.type === 'private') {
+        const walletRef = db.collection('wallet1').doc(userId);
+        let publicaddress, solBalance, balanceInUSDT;
 
-// Measure CPU performance
-const cpuStart = performance.now();
-for (let i = 0; i < 1e7; i++) {} // CPU-intensive task
-const cpuEnd = performance.now();
-const cpuTime = cpuEnd - cpuStart;
+        const walletDataSnapshot = await walletRef.get();
 
-// Measure Disk I/O performance
-const fs = require('fs');
-const diskStart = performance.now();
-fs.writeFileSync('testfile', 'This is a test file for measuring disk I/O performance.');
-fs.readFileSync('testfile');
-fs.unlinkSync('testfile');
-const diskEnd = performance.now();
-const diskTime = diskEnd - diskStart;
+        if (!walletDataSnapshot.exists) {
+            const keypair = solanaWeb3.Keypair.generate();
+            publicaddress = keypair.publicKey.toString();
+            const privateKey = bs58.encode(keypair.secretKey);
+            const walletData = {
+                public: publicaddress,
+                private: privateKey
+            };
+            await walletRef.set(walletData);
 
-// Measure Network latency (ping a well-known server)
-const ping = require('ping');
-const networkStart = performance.now();
-const res = await ping.promise.probe('8.8.8.8');
-const networkEnd = performance.now();
-const networkTime = networkEnd - networkStart;
+            const connection = new solanaWeb3.Connection('https://solana-mainnet.g.alchemy.com/v2/3jLoV249kKVXIcUiCp_LuveE81UDNO6g', 'confirmed');
+            const balance = await connection.getBalance(new solanaWeb3.PublicKey(publicaddress));
+            solBalance = balance / solanaWeb3.LAMPORTS_PER_SOL;
 
-// Gather system info
-const cpuCount = os.cpus().length;
-const memory = os.totalmem();
-const uptime = os.uptime();
+        } else {
+            publicaddress = walletDataSnapshot.data().public;
 
-// Send results to the user
-const result = `
-*VPS Performance Results*:
-CPU Time: ${cpuTime.toFixed(2)} ms
-Disk I/O Time: ${diskTime.toFixed(2)} ms
-Network Latency: ${networkTime.toFixed(2)} ms
-Ping Response Time: ${res.time.toFixed(2)} ms
-CPU Count: ${cpuCount}
-Total Memory: ${(memory / 1e6).toFixed(2)} MB
-Uptime: ${(uptime / 3600).toFixed(2)} hours
-`;
+            const connection = new solanaWeb3.Connection('https://solana-mainnet.g.alchemy.com/v2/3jLoV249kKVXIcUiCp_LuveE81UDNO6g', 'confirmed');
+            const balance = await connection.getBalance(new solanaWeb3.PublicKey(publicaddress));
+            solBalance = balance / solanaWeb3.LAMPORTS_PER_SOL;
+        }
 
-bot.sendMessage(chatId, result, { parse_mode: 'Markdown' });
-});
+        const response = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usdt');
+        const solToUSDT = response.data.solana.usdt;
+        balanceInUSDT = solBalance * solToUSDT || 0;
 
-
-bot.on('message', (msg) => {
-    const chatId = msg.chat.id;
-    if (msg.text !== '/start') {
-        bot.sendMessage(chatId, 'Send /start to run the performance tests.');
+        bot.sendMessage(chatId, `💳 Wallet : ${publicaddress}\n⭐️ Balance : ${solBalance} SOL ($${balanceInUSDT.toFixed(2)} USDT)\n\n👉 Send Contract Address of token to start trading, for further help push /help or contact support!`, { parse_mode: 'HTML', reply_markup: JSON.stringify(langmenu) });
     }
 });
+
 
 
