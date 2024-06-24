@@ -1,73 +1,102 @@
 const TelegramBot = require('node-telegram-bot-api');
-const admin = require('firebase-admin');
-const cron = require('node-cron');
-const serviceAccount = require('./adorabuzz-firebase-adminsdk-ugy7m-fd01aea3f3.json');
-const token = '7114080864:AAGqSRVUGjwW9pgR4HsmMRSJP0n6k4E_svM';
 const axios = require('axios');
-const bot = new TelegramBot(token, { polling: true });
 const solanaWeb3 = require('@solana/web3.js');
 const bs58 = require('bs58');
+const { createClient } = require('redis');
 
-admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount)
-});
-
-const db = admin.firestore();
-
-// all inline keyboard 
-const langmenu = { // Inline Keyboard for New users/invited users to this bot
-    inline_keyboard: [
-        [{ text: 'English 🌎', callback_data : 'en'} ,],
-        [{ text: 'German 🇩🇪', callback_data : 'de'} ,],
-    ]
-}
-
-
-let refercode = 'none';
-
-
-bot.onText(/\/start(?:\s+(.+))?/, async (msg, match) => {
-    const userId = msg.from.id.toString();
-    const Code = match[1];
-    const first_name = msg.from.first_name;
-    const chatId = msg.chat.id.toString();
-    const username = msg.from.username;
-    
-    if (msg.chat.type === 'private') {
-        const walletRef = db.collection('wallet1').doc(userId);
-        let publicaddress, solBalance, balanceInUSDT;
-
-        const walletDataSnapshot = await walletRef.get();
-
-        if (!walletDataSnapshot.exists) {
-            const keypair = solanaWeb3.Keypair.generate();
-            publicaddress = keypair.publicKey.toString();
-            const privateKey = bs58.encode(keypair.secretKey);
-            const walletData = {
-                public: publicaddress,
-                private: privateKey
-            };
-            await walletRef.set(walletData);
-
-            const connection = new solanaWeb3.Connection('https://solana-mainnet.g.alchemy.com/v2/3jLoV249kKVXIcUiCp_LuveE81UDNO6g', 'confirmed');
-            const balance = await connection.getBalance(new solanaWeb3.PublicKey(publicaddress));
-            solBalance = balance / solanaWeb3.LAMPORTS_PER_SOL;
-
-        } else {
-            publicaddress = walletDataSnapshot.data().public;
-
-            const connection = new solanaWeb3.Connection('https://solana-mainnet.g.alchemy.com/v2/3jLoV249kKVXIcUiCp_LuveE81UDNO6g', 'confirmed');
-            const balance = await connection.getBalance(new solanaWeb3.PublicKey(publicaddress));
-            solBalance = balance / solanaWeb3.LAMPORTS_PER_SOL;
-        }
-
-        const response = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usdt');
-        const solToUSDT = response.data.solana.usdt;
-        balanceInUSDT = solBalance * solToUSDT || 0;
-
-        bot.sendMessage(chatId, `💳 Wallet : ${publicaddress}\n⭐️ Balance : ${solBalance} SOL ($${balanceInUSDT.toFixed(2)} USDT)\n\n👉 Send Contract Address of token to start trading, for further help push /help or contact support!`, { parse_mode: 'HTML', reply_markup: JSON.stringify(langmenu) });
+// Bot Token and Redis Configuration
+const token = '7114080864:AAGqSRVUGjwW9pgR4HsmMRSJP0n6k4E_svM';
+const redisClient = createClient({
+    password: '4syzuHeGtpWNnN9v6fyGh2gGNXrfhhwH',
+    socket: {
+        host: 'redis-18899.c91.us-east-1-3.ec2.redns.redis-cloud.com',
+        port: 18899
     }
 });
 
+// Initialize Telegram Bot
+const bot = new TelegramBot(token, { polling: true });
 
+// Inline Keyboard for Language Selection
+const langmenu = {
+    inline_keyboard: [
+        [{ text: 'English 🌎', callback_data: 'en' }],
+        [{ text: 'German 🇩🇪', callback_data: 'de' }]
+    ]
+};
 
+// Connect to Redis
+async function connectRedis() {
+    if (!redisClient.isOpen) {
+        await redisClient.connect();
+    }
+}
+
+// Fetch SOL to USDT conversion rate
+async function getSOLPriceInUSDT() {
+    try {
+        const response = await axios.get('https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usdt');
+        return response.data.solana.usdt;
+    } catch (error) {
+        console.error('Error fetching SOL price:', error);
+        return 0;
+    }
+}
+
+// Handle /start command
+bot.onText(/\/start(?:\s+(.+))?/, async (msg, match) => {
+    const userId = msg.from.id.toString();
+    const Code = match ? match[1] : null;
+    const first_name = msg.from.first_name;
+    const chatId = msg.chat.id.toString();
+    const username = msg.from.username;
+
+    if (msg.chat.type === 'private') {
+        await connectRedis();
+        const key = `wallet1:users:${userId}`;
+
+        // Check if user already exists
+        const existingUser = await redisClient.hGetAll(key);
+        if (Object.keys(existingUser).length > 0) {
+            bot.sendMessage(chatId, `User ${userId} already exists. Data not modified.`);
+            const publicKey = existingUser.public;
+
+            // Fetch wallet balance
+            const connection = new solanaWeb3.Connection('https://chaotic-frosty-waterfall.solana-mainnet.quiknode.pro/c18eac1bcbac3610b6b8de4eb6725966e2d12037/', 'confirmed');
+            const balance = await connection.getBalance(new solanaWeb3.PublicKey(publicKey));
+            const solBalance = balance / solanaWeb3.LAMPORTS_PER_SOL;
+
+            // Convert balance to USDT
+            const solToUSDT = await getSOLPriceInUSDT();
+            const balanceInUSDT = solBalance * solToUSDT || 0;
+
+            bot.sendMessage(chatId, `💳 Wallet: ${publicKey}\n⭐️ Balance: ${solBalance.toFixed(2)} SOL ($${balanceInUSDT.toFixed(2)} USDT)\n\n👉 Send Contract Address of token to start trading, for further help push /help or contact support!`, { parse_mode: 'HTML', reply_markup: JSON.stringify(langmenu) });
+            return;
+        }
+
+        bot.sendMessage(chatId, 'Hold on, We are generating your wallet!');
+
+        // Generate new Solana wallet
+        const keypair = solanaWeb3.Keypair.generate();
+        const publicKey = keypair.publicKey.toString();
+        const privateKey = bs58.encode(keypair.secretKey);
+
+        await redisClient.hSet(key, {
+            userid: userId,
+            public: publicKey,
+            private: privateKey
+        });
+
+        // Fetch wallet balance
+        const connection = new solanaWeb3.Connection('https://chaotic-frosty-waterfall.solana-mainnet.quiknode.pro/c18eac1bcbac3610b6b8de4eb6725966e2d12037/', 'confirmed');
+        const balance = await connection.getBalance(new solanaWeb3.PublicKey(publicKey));
+        const solBalance = balance / solanaWeb3.LAMPORTS_PER_SOL;
+
+        // Convert balance to USDT
+        const solToUSDT = await getSOLPriceInUSDT();
+        const balanceInUSDT = solBalance * solToUSDT || 0;
+
+        // Send wallet details to user
+        bot.sendMessage(chatId, `💳 Wallet: ${publicKey}\n⭐️ Balance: ${solBalance.toFixed(2)} SOL ($${balanceInUSDT.toFixed(2)} USDT)\n\n👉 Send Contract Address of token to start trading, for further help push /help or contact support!`, { parse_mode: 'HTML', reply_markup: JSON.stringify(langmenu) });
+    }
+});
