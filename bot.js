@@ -1,7 +1,7 @@
 const TelegramBot = require('node-telegram-bot-api');
 const admin = require('firebase-admin');
 const cron = require('node-cron');
-const serviceAccount = require('./firebase.json');
+const serviceAccount = require('./adorabuzz-firebase-adminsdk-ugy7m-fd01aea3f3.json');
 const token = '7114080864:AAGqSRVUGjwW9pgR4HsmMRSJP0n6k4E_svM';
 const axios = require('axios');
 const bot = new TelegramBot(token, { polling: true });
